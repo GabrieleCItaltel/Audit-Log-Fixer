@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>JSON Flattener</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: 'JetBrains Mono','Fira Code','Consolas','Courier New',monospace;
+    background: #0d0f14; color: #e2e8f0;
+    display: flex; flex-direction: column; min-height: 100vh;
+  }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: #0d0f14; }
+  ::-webkit-scrollbar-thumb { background: #252a35; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #2e3647; }
+
+  /* Header */
+  #header {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:18px 28px; border-bottom:1px solid #252a35;
+    background:#151820; flex-wrap:wrap; gap:12px; flex-shrink:0;
+  }
+  #header-left { display:flex; align-items:center; gap:14px; }
+  #logo { font-size:28px; color:#4af0b0; line-height:1; }
+  #app-title { font-size:18px; font-weight:700; letter-spacing:0.04em; }
+  #app-sub { font-size:11px; color:#64748b; letter-spacing:0.1em; text-transform:uppercase; margin-top:2px; }
+  #header-btns { display:flex; gap:8px; }
+  .btn-copy {
+    background:none; color:#4af0b0; border:1px solid #4af0b0;
+    border-radius:6px; padding:8px 18px; font-family:inherit;
+    font-weight:700; font-size:13px; cursor:pointer; transition:background 0.2s;
+  }
+  .btn-copy.copied { background:#1a3d30; }
+  .btn-export {
+    background:#4af0b0; color:#0d0f14; border:none;
+    border-radius:6px; padding:8px 18px; font-family:inherit;
+    font-weight:700; font-size:13px; cursor:pointer;
+  }
+  .btn-export:hover { background:#38d49a; }
+
+  /* Config */
+  #config-bar {
+    display:flex; gap:20px; padding:12px 28px;
+    border-bottom:1px solid #252a35; background:#10131a;
+    flex-wrap:wrap; align-items:center; flex-shrink:0;
+  }
+  .cfg-label { display:flex; align-items:center; gap:8px; }
+  .cfg-key { font-size:11px; color:#64748b; text-transform:uppercase; letter-spacing:0.1em; }
+  .cfg-input {
+    background:#151820; border:1px solid #252a35; border-radius:4px;
+    padding:4px 10px; color:#4af0b0; font-family:inherit; font-size:13px;
+    width:60px; outline:none;
+  }
+  .cfg-input:focus { border-color:#4af0b0; }
+  .cfg-input.wide { width:200px; }
+  .toggle-wrap { display:flex; align-items:center; gap:10px; cursor:pointer; user-select:none; }
+  .toggle-track {
+    width:36px; height:20px; border-radius:10px; background:#252a35;
+    position:relative; transition:background 0.2s; flex-shrink:0;
+  }
+  .toggle-track.on { background:#4af0b0; }
+  .toggle-knob {
+    position:absolute; top:2px; left:2px;
+    width:16px; height:16px; border-radius:50%;
+    background:#0d0f14; transition:transform 0.2s;
+  }
+  .toggle-track.on .toggle-knob { transform:translateX(16px); }
+  .toggle-label { font-size:11px; text-transform:uppercase; letter-spacing:0.1em; color:#64748b; }
+  .toggle-wrap.on .toggle-label { color:#4af0b0; }
+
+  /* Hint */
+  #hint {
+    display:flex; gap:12px; align-items:flex-start;
+    padding:14px 28px; background:#1a3d30;
+    border-bottom:1px solid #252a35; font-size:13px;
+    color:#e2e8f0; line-height:1.6; flex-shrink:0;
+  }
+  #hint-icon { font-size:18px; flex-shrink:0; margin-top:1px; }
+
+  /* Drop zone */
+  #drop-wrap { display:flex; justify-content:center; align-items:flex-start; padding:40px 20px; flex:1; }
+  #drop-zone {
+    width:100%; max-width:640px; border:2px dashed #252a35;
+    border-radius:12px; padding:60px 40px; text-align:center;
+    cursor:pointer; transition:border-color 0.2s, background 0.2s;
+  }
+  #drop-zone.drag-over { border-color:#4af0b0; background:#1a3d30; }
+  #drop-icon { font-size:48px; color:#4af0b0; margin-bottom:16px; }
+  #drop-text { font-size:20px; font-weight:700; margin-bottom:10px; }
+  #drop-sub { font-size:13px; color:#64748b; line-height:1.8; }
+  #drop-sub strong { color:#e2e8f0; }
+
+  /* Error */
+  #error-box {
+    margin:24px 28px; background:#1f0f0f;
+    border:1px solid #f87171; border-radius:8px;
+    padding:16px 20px; color:#f87171; font-size:13px; display:none;
+  }
+  #error-hint { color:#64748b; font-size:11px; margin-top:6px; }
+
+  /* Stats */
+  #stats-bar {
+    display:none; align-items:center; gap:10px;
+    padding:12px 28px; border-bottom:1px solid #252a35; flex-wrap:wrap; flex-shrink:0;
+  }
+  .chip {
+    background:#151820; border:1px solid #252a35;
+    border-radius:20px; padding:4px 14px; font-size:12px; color:#64748b;
+  }
+  .chip-num { color:#4af0b0; font-weight:700; margin-right:4px; }
+  .chip-file { max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #btn-reset {
+    margin-left:auto; background:none; border:1px solid #252a35;
+    border-radius:6px; padding:4px 14px; color:#64748b;
+    font-family:inherit; font-size:12px; cursor:pointer;
+  }
+  #btn-reset:hover { color:#e2e8f0; border-color:#64748b; }
+
+  /* Table */
+  #table-wrap { overflow-x:auto; overflow-y:auto; flex:1; min-height:0; display:none; max-height:calc(100vh - 260px); }
+  table { width:100%; border-collapse:collapse; font-size:12px; table-layout:auto; }
+  thead th {
+    background:#1a1f2e; color:#4af0b0; padding:10px 14px;
+    text-align:left; white-space:nowrap; position:sticky; top:0; z-index:1;
+    border-bottom:2px solid #252a35; font-weight:600; letter-spacing:0.04em;
+    max-width:200px; overflow:hidden; text-overflow:ellipsis;
+  }
+  thead th.th-idx { color:#64748b; font-weight:400; width:46px; min-width:46px; text-align:right; }
+  tbody tr:nth-child(even) { background:#151820; }
+  tbody tr:nth-child(odd)  { background:#0d0f14; }
+  tbody td {
+    padding:7px 14px; border-bottom:1px solid #252a35;
+    white-space:nowrap; max-width:240px;
+    overflow:hidden; text-overflow:ellipsis; vertical-align:top;
+  }
+  tbody td.td-idx  { color:#64748b; font-size:11px; text-align:right; width:46px; }
+  tbody td.td-empty { color:#252a35; }
+  tbody td.td-long { cursor:pointer; }
+  tbody td.td-expanded {
+    white-space:pre-wrap; word-break:break-all; max-width:420px;
+    overflow:visible; background:#1a2535; color:#93c5fd; cursor:pointer;
+  }
+
+  /* Pager */
+  #pager {
+    display:none; align-items:center; gap:8px;
+    padding:12px 28px; border-top:1px solid #252a35;
+    justify-content:center; flex-shrink:0;
+  }
+  .pg-btn {
+    background:#151820; border:1px solid #252a35; border-radius:4px;
+    padding:4px 12px; color:#e2e8f0; font-family:inherit; cursor:pointer; font-size:14px;
+  }
+  .pg-btn:disabled { opacity:0.4; cursor:not-allowed; }
+  .pg-btn:not(:disabled):hover { border-color:#4af0b0; color:#4af0b0; }
+  #pg-info { font-size:12px; color:#64748b; padding:0 8px; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <div id="header-left">
+    <span id="logo">⬡</span>
+    <div>
+      <div id="app-title">JSON Flattener</div>
+      <div id="app-sub">JSON · JSONL · CSV · TSV · Defender Audit Logs</div>
+    </div>
+  </div>
+  <div id="header-btns" style="display:none">
+    <button class="btn-copy" id="btn-copy">⎘ Copy All</button>
+    <button class="btn-export" id="btn-export">↓ Export CSV</button>
+  </div>
+</div>
+
+<div id="config-bar">
+  <label class="cfg-label">
+    <span class="cfg-key">Separator</span>
+    <input class="cfg-input" id="inp-sep" value="." maxlength="4">
+  </label>
+  <label class="cfg-label">
+    <span class="cfg-key">Max Depth</span>
+    <input class="cfg-input" id="inp-depth" placeholder="∞" maxlength="2">
+  </label>
+  <div class="toggle-wrap on" id="toggle-explode">
+    <div class="toggle-track on" id="toggle-track"><div class="toggle-knob"></div></div>
+    <span class="toggle-label">Explode Arrays</span>
+  </div>
+  <label class="cfg-label" id="search-wrap" style="display:none">
+    <span class="cfg-key">Search</span>
+    <input class="cfg-input wide" id="inp-search" placeholder="filter any value…">
+  </label>
+</div>
+
+<div id="hint">
+  <span id="hint-icon">💡</span>
+  <span>
+    <strong style="color:#4af0b0">Explode Arrays</strong> is
+    <strong style="color:#4af0b0">ON</strong> — nested arrays of objects (e.g. Defender
+    <em>FolderItems</em>) expand into one row per item.
+    Turn off for classic dot-indexed flattening.
+  </span>
+</div>
+
+<div id="drop-wrap">
+  <div id="drop-zone">
+    <input type="file" id="file-input" accept=".json,.txt,.csv,.tsv,.log" style="display:none">
+    <div id="drop-icon">⬡</div>
+    <div id="drop-text">Drop your file here</div>
+    <div id="drop-sub">
+      Auto-detects <strong>JSON</strong> · <strong>JSONL</strong> · <strong>CSV</strong> · <strong>TSV</strong><br>
+      Expands embedded JSON blobs &amp; nested arrays automatically<br>
+      <em style="color:#4af0b040">Defender · Sentinel · Purview audit exports supported</em>
+    </div>
+  </div>
+</div>
+
+<div id="error-box">
+  <strong>Parse Error</strong> — <span id="error-msg"></span>
+  <div id="error-hint">Try adjusting settings and re-uploading.</div>
+</div>
+
+<div id="stats-bar">
+  <span class="chip" id="chip-type" style="display:none"></span>
+  <span class="chip" id="chip-exploded" style="display:none;border-color:#4af0b0;color:#4af0b0">arrays exploded</span>
+  <span class="chip"><span class="chip-num" id="chip-rows">0</span>rows</span>
+  <span class="chip"><span class="chip-num" id="chip-cols">0</span>cols</span>
+  <span class="chip chip-file" id="chip-file"></span>
+  <button id="btn-reset">✕ Load new file</button>
+</div>
+
+<div id="table-wrap">
+  <table><thead id="thead"></thead><tbody id="tbody"></tbody></table>
+</div>
+
+<div id="pager">
+  <button class="pg-btn" id="pg-first">«</button>
+  <button class="pg-btn" id="pg-prev">‹</button>
+  <span id="pg-info"></span>
+  <button class="pg-btn" id="pg-next">›</button>
+  <button class="pg-btn" id="pg-last">»</button>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ── Core: flatten ──────────────────────────────────────────── */
+  function flatten(obj, parentKey, sep, maxDepth, depth) {
+    parentKey = parentKey || "";
+    sep       = sep != null ? sep : ".";
+    maxDepth  = maxDepth != null ? maxDepth : null;
+    depth     = depth || 0;
+    var out = {};
+    if (maxDepth !== null && depth >= maxDepth) {
+      out[parentKey] = (obj !== null && typeof obj === "object") ? JSON.stringify(obj) : obj;
+      return out;
+    }
+    if (obj !== null && typeof obj === "object" && !Array.isArray(obj)) {
+      Object.keys(obj).forEach(function (k) {
+        var nk = parentKey ? parentKey + sep + k : String(k);
+        Object.assign(out, flatten(obj[k], nk, sep, maxDepth, depth + 1));
+      });
+    } else if (Array.isArray(obj)) {
+      obj.forEach(function (v, i) {
+        var nk = parentKey ? parentKey + sep + i : String(i);
+        Object.assign(out, flatten(v, nk, sep, maxDepth, depth + 1));
+      });
+    } else {
+      out[parentKey] = obj;
+    }
+    return out;
+  }
+
+  /* ── Core: explode ──────────────────────────────────────────── */
+  function explodeRows(obj, parentKey, sep, maxDepth, depth) {
+    parentKey = parentKey || "";
+    sep       = sep != null ? sep : ".";
+    maxDepth  = maxDepth != null ? maxDepth : null;
+    depth     = depth || 0;
+    if (maxDepth !== null && depth >= maxDepth) {
+      var r = {}; r[parentKey] = (obj !== null && typeof obj === "object") ? JSON.stringify(obj) : obj;
+      return [r];
+    }
+    if (Array.isArray(obj)) {
+      if (obj.length === 0) { var r = {}; if (parentKey) r[parentKey] = ""; return [r]; }
+      if (typeof obj[0] === "object" && obj[0] !== null) {
+        var all = [];
+        obj.forEach(function (item) {
+          explodeRows(item, parentKey, sep, maxDepth, depth + 1).forEach(function (row) { all.push(row); });
+        });
+        return all;
+      }
+      var flat = {};
+      obj.forEach(function (v, i) { flat[parentKey ? parentKey + sep + i : String(i)] = v; });
+      return [flat];
+    }
+    if (obj !== null && typeof obj === "object") {
+      var rows = [{}];
+      Object.keys(obj).forEach(function (k) {
+        var nk = parentKey ? parentKey + sep + k : String(k);
+        var subs = explodeRows(obj[k], nk, sep, maxDepth, depth + 1);
+        var next = [];
+        rows.forEach(function (row) {
+          subs.forEach(function (sub) { next.push(Object.assign({}, row, sub)); });
+        });
+        rows = next;
+      });
+      return rows;
+    }
+    var r = {}; r[parentKey] = obj; return [r];
+  }
+
+  /* ── Helpers ────────────────────────────────────────────────── */
+  function tryParseJSON(val) {
+    if (typeof val !== "string") return val;
+    var t = val.trim();
+    if ((t[0] === "{" && t[t.length - 1] === "}") || (t[0] === "[" && t[t.length - 1] === "]")) {
+      try { return JSON.parse(t); } catch (e) { return val; }
+    }
+    return val;
+  }
+
+  function parseLine(line, delim) {
+    if (delim === "\t") return line.split("\t");
+    var fields = [], cur = "", inQ = false;
+    for (var i = 0; i < line.length; i++) {
+      var ch = line[i];
+      if (ch === '"') {
+        if (inQ && line[i + 1] === '"') { cur += '"'; i++; continue; }
+        inQ = !inQ;
+      } else if (ch === delim && !inQ) { fields.push(cur); cur = ""; }
+      else cur += ch;
+    }
+    fields.push(cur);
+    return fields;
+  }
+
+  function detectDelimiter(line) {
+    var t = (line.match(/\t/g) || []).length;
+    var c = (line.match(/,/g)  || []).length;
+    var s = (line.match(/;/g)  || []).length;
+    if (t >= c && t >= s) return "\t";
+    if (s > c) return ";";
+    return ",";
+  }
+
+  function parseDelimited(text) {
+    var lines = text.split(/\r?\n/).filter(function (l) { return l.trim() !== ""; });
+    if (!lines.length) throw new Error("File is empty.");
+    var delim = detectDelimiter(lines[0]);
+    var first = parseLine(lines[0], delim);
+    var isData = /^[0-9a-f-]{36}$/i.test(first[0].trim());
+    var headers   = isData ? first.map(function (_, i) { return "col_" + i; }) : first.map(function (h) { return h.trim().replace(/^"|"$/g, ""); });
+    var dataLines = isData ? lines : lines.slice(1);
+    return {
+      delim: delim,
+      rows: dataLines.map(function (line) {
+        var vals = parseLine(line, delim);
+        var obj = {};
+        headers.forEach(function (h, i) { obj[h] = (vals[i] != null ? vals[i] : "").trim().replace(/^"|"$/g, ""); });
+        return obj;
+      })
+    };
+  }
+
+  function detectAndParse(text) {
+    var t = text.trim();
+    if (t[0] === "{" || t[0] === "[") {
+      try { return { type: "json", data: JSON.parse(t) }; }
+      catch (e) { throw new Error("Looks like JSON but failed: " + e.message); }
+    }
+    var lines = t.split(/\r?\n/).filter(function (l) { return l.trim(); });
+    if (lines[0] && lines[0].trim()[0] === "{") {
+      try { return { type: "jsonl", data: lines.map(function (l) { return JSON.parse(l.trim()); }) }; }
+      catch (e) { /* fall through */ }
+    }
+    var pd = parseDelimited(t);
+    var label = pd.delim === "\t" ? "tsv" : pd.delim === ";" ? "ssv" : "csv";
+    return { type: label, data: pd.rows };
+  }
+
+  function toRows(data, sep, maxDepth, doExplode) {
+    sep      = sep || ".";
+    maxDepth = (maxDepth === "" || maxDepth == null) ? null : parseInt(maxDepth, 10);
+    var rawRows = [];
+    var arr = Array.isArray(data) ? data : [data];
+    var isSingle = !Array.isArray(data);
+
+    arr.forEach(function (item) {
+      if (isSingle) { item = data; }
+      var expanded = {};
+      Object.keys(item).forEach(function (k) { expanded[k] = tryParseJSON(item[k]); });
+      if (doExplode) {
+        explodeRows(expanded, "", sep, maxDepth).forEach(function (r) {
+          var stripped = {};
+          Object.keys(r).forEach(function (k) { stripped[k.replace(/^\./, "")] = r[k]; });
+          rawRows.push(stripped);
+        });
+      } else {
+        var flat = {};
+        Object.keys(expanded).forEach(function (k) {
+          var v = expanded[k];
+          if (v !== null && typeof v === "object") Object.assign(flat, flatten(v, k, sep, maxDepth));
+          else flat[k] = v;
+        });
+        rawRows.push(flat);
+      }
+    });
+
+    var seen = {};
+    rawRows.forEach(function (row) { Object.keys(row).forEach(function (k) { seen[k] = true; }); });
+    var columns = Object.keys(seen);
+    var rows = rawRows.map(function (row) {
+      var out = {};
+      columns.forEach(function (c) { out[c] = row[c] != null ? row[c] : ""; });
+      return out;
+    });
+    return { columns: columns, rows: rows };
+  }
+
+  /* ── CSV ────────────────────────────────────────────────────── */
+  function buildCSV(columns, rows) {
+    function esc(v) {
+      var s = String(v != null ? v : "");
+      return (s.indexOf(",") >= 0 || s.indexOf('"') >= 0 || s.indexOf("\n") >= 0)
+        ? '"' + s.replace(/"/g, '""') + '"' : s;
+    }
+    var lines = [columns.map(esc).join(",")];
+    rows.forEach(function (row) { lines.push(columns.map(function (c) { return esc(row[c]); }).join(",")); });
+    return lines.join("\r\n");
+  }
+
+  /* ── HTML escape ────────────────────────────────────────────── */
+  function he(str) {
+    return String(str).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  }
+
+  /* ── State ──────────────────────────────────────────────────── */
+  var state = { columns:[], rows:[], filtered:[], fileName:"", fileType:"", rawData:null, rawType:"", explode:true, page:0, expandedCell:null };
+  var PAGE_SIZE = 50;
+  var TYPE_BADGE = {
+    json:  { label:"JSON",             color:"#4af0b0" },
+    jsonl: { label:"JSON Lines",       color:"#60a5fa" },
+    csv:   { label:"CSV + JSON cells", color:"#f59e0b" },
+    tsv:   { label:"TSV + JSON cells", color:"#fb923c" },
+    ssv:   { label:"SSV + JSON cells", color:"#c084fc" }
+  };
+
+  /* ── DOM ────────────────────────────────────────────────────── */
+  function $  (id) { return document.getElementById(id); }
+  var elDropWrap   = $("drop-wrap"),   elDropZone   = $("drop-zone");
+  var elDropIcon   = $("drop-icon"),   elDropText   = $("drop-text");
+  var elFileInput  = $("file-input"),  elError      = $("error-box");
+  var elErrorMsg   = $("error-msg"),   elHint       = $("hint");
+  var elStatsBar   = $("stats-bar"),   elTableWrap  = $("table-wrap");
+  var elPager      = $("pager"),       elThead      = $("thead");
+  var elTbody      = $("tbody"),       elHeaderBtns = $("header-btns");
+  var elSearchWrap = $("search-wrap"), elChipType   = $("chip-type");
+  var elChipExplod = $("chip-exploded"),elChipRows  = $("chip-rows");
+  var elChipCols   = $("chip-cols"),   elChipFile   = $("chip-file");
+  var elInpSep     = $("inp-sep"),     elInpDepth   = $("inp-depth");
+  var elInpSearch  = $("inp-search"),  elToggle     = $("toggle-explode");
+  var elToggleTrk  = $("toggle-track"),elBtnCopy   = $("btn-copy");
+  var elBtnExport  = $("btn-export"),  elBtnReset   = $("btn-reset");
+  var elPgFirst    = $("pg-first"),    elPgPrev     = $("pg-prev");
+  var elPgNext     = $("pg-next"),     elPgLast     = $("pg-last");
+  var elPgInfo     = $("pg-info");
+
+  /* ── UI helpers ─────────────────────────────────────────────── */
+  function showError(msg)  { elErrorMsg.textContent = msg; elError.style.display = "block"; }
+  function hideError()     { elError.style.display = "none"; }
+
+  function showResults() {
+    elDropWrap.style.display   = "none";
+    elHint.style.display       = "none";
+    elStatsBar.style.display   = "flex";
+    elTableWrap.style.display  = "block";
+    elHeaderBtns.style.display = "flex";
+    elSearchWrap.style.display = "flex";
+  }
+  function showDrop() {
+    elDropWrap.style.display   = "flex";
+    elHint.style.display       = "flex";
+    elStatsBar.style.display   = "none";
+    elTableWrap.style.display  = "none";
+    elPager.style.display      = "none";
+    elHeaderBtns.style.display = "none";
+    elSearchWrap.style.display = "none";
+    elInpSearch.value          = "";
+  }
+
+  function applyFilter() {
+    var q = elInpSearch.value.toLowerCase();
+    state.filtered = q
+      ? state.rows.filter(function (row) {
+          return Object.values(row).some(function (v) { return String(v).toLowerCase().indexOf(q) >= 0; });
+        })
+      : state.rows.slice();
+    state.page = 0;
+  }
+
+  function renderTable() {
+    // thead
+    var th = '<tr><th class="th-idx">#</th>';
+    state.columns.forEach(function (col) { th += '<th title="' + he(col) + '">' + he(col) + '</th>'; });
+    th += "</tr>";
+    elThead.innerHTML = th;
+
+    // tbody
+    var total    = Math.ceil(state.filtered.length / PAGE_SIZE);
+    var pageRows = state.filtered.slice(state.page * PAGE_SIZE, (state.page + 1) * PAGE_SIZE);
+    var tb = "";
+    pageRows.forEach(function (row, ri) {
+      var absRow = state.page * PAGE_SIZE + ri;
+      tb += "<tr>";
+      tb += '<td class="td-idx">' + (absRow + 1) + "</td>";
+      state.columns.forEach(function (col) {
+        var val    = row[col];
+        var strVal = String(val != null ? val : "");
+        var isExp  = state.expandedCell && state.expandedCell.row === absRow && state.expandedCell.col === col;
+        var isLong = strVal.length > 55;
+        var cls    = isExp ? "td-expanded" : (isLong ? "td-long" : "");
+        var attrs  = '';
+        if (isLong) attrs += ' data-row="' + absRow + '" data-col="' + he(col) + '"';
+        if (isLong && !isExp) attrs += ' title="' + he(strVal) + '"';
+        if (val === "" || val === null || val === undefined) {
+          tb += '<td class="td-empty' + (cls ? ' ' + cls : '') + '"' + attrs + '>—</td>';
+        } else {
+          tb += '<td' + (cls ? ' class="' + cls + '"' : '') + attrs + '>' + he(strVal) + '</td>';
+        }
+      });
+      tb += "</tr>";
+    });
+    elTbody.innerHTML = tb;
+
+    // pager
+    if (total > 1) {
+      elPager.style.display  = "flex";
+      elPgInfo.textContent   = "Page " + (state.page + 1) + " / " + total + " · " + state.filtered.length + " rows";
+      elPgFirst.disabled = elPgPrev.disabled = state.page === 0;
+      elPgNext.disabled  = elPgLast.disabled = state.page >= total - 1;
+      elPgLast._total = total;
+    } else {
+      elPager.style.display = "none";
+    }
+  }
+
+  function processData(data, type) {
+    var sep   = elInpSep.value || ".";
+    var depth = elInpDepth.value.replace(/\D/g, "");
+    try {
+      var result = toRows(data, sep, depth, state.explode);
+      state.columns      = result.columns;
+      state.rows         = result.rows;
+      state.fileType     = type;
+      state.expandedCell = null;
+      applyFilter();
+      // stats
+      var badge = TYPE_BADGE[type] || { label: type, color: "#64748b" };
+      elChipType.textContent  = badge.label;
+      elChipType.style.borderColor = badge.color;
+      elChipType.style.color  = badge.color;
+      elChipType.style.display = "inline-block";
+      elChipExplod.style.display = state.explode ? "inline-block" : "none";
+      elChipRows.textContent  = state.rows.length;
+      elChipCols.textContent  = state.columns.length;
+      elChipFile.textContent  = state.fileName;
+      renderTable();
+      showResults();
+      hideError();
+    } catch (e) { showError(e.message); }
+  }
+
+  function loadFile(file) {
+    state.fileName = file.name;
+    state.rawData  = null;
+    hideError();
+    var reader = new FileReader();
+    reader.onload = function (e) {
+      try {
+        var parsed = detectAndParse(e.target.result);
+        state.rawData = parsed.data;
+        state.rawType = parsed.type;
+        processData(parsed.data, parsed.type);
+      } catch (err) { showError(err.message); }
+    };
+    reader.readAsText(file);
+  }
+
+  function reprocess() { if (state.rawData) processData(state.rawData, state.rawType); }
+
+  /* ── Events ─────────────────────────────────────────────────── */
+  elDropZone.addEventListener("dragover",  function (e) { e.preventDefault(); elDropZone.classList.add("drag-over"); elDropIcon.textContent = "⬇"; elDropText.textContent = "Release to load"; });
+  elDropZone.addEventListener("dragleave", function ()  { elDropZone.classList.remove("drag-over"); elDropIcon.textContent = "⬡"; elDropText.textContent = "Drop your file here"; });
+  elDropZone.addEventListener("drop",      function (e) { e.preventDefault(); elDropZone.classList.remove("drag-over"); elDropIcon.textContent = "⬡"; elDropText.textContent = "Drop your file here"; var f = e.dataTransfer.files[0]; if (f) loadFile(f); });
+  elDropZone.addEventListener("click",     function ()  { elFileInput.click(); });
+  elFileInput.addEventListener("change",   function ()  { if (elFileInput.files[0]) loadFile(elFileInput.files[0]); elFileInput.value = ""; });
+
+  elInpSep.addEventListener("input",   reprocess);
+  elInpDepth.addEventListener("input", function () { elInpDepth.value = elInpDepth.value.replace(/\D/g, ""); reprocess(); });
+
+  elToggle.addEventListener("click", function () {
+    state.explode = !state.explode;
+    elToggle.classList.toggle("on",    state.explode);
+    elToggleTrk.classList.toggle("on", state.explode);
+    reprocess();
+  });
+
+  elInpSearch.addEventListener("input", function () { applyFilter(); renderTable(); });
+
+  elTbody.addEventListener("click", function (e) {
+    var td = e.target.closest ? e.target.closest("td[data-row]") : (function () { var n = e.target; while (n && n.tagName !== "TD") n = n.parentNode; return (n && n.getAttribute("data-row")) ? n : null; })();
+    if (!td) return;
+    var row = parseInt(td.getAttribute("data-row"), 10);
+    var col = td.getAttribute("data-col");
+    state.expandedCell = (state.expandedCell && state.expandedCell.row === row && state.expandedCell.col === col) ? null : { row: row, col: col };
+    renderTable();
+  });
+
+  function fallbackCopy(text, onSuccess) {
+    var ta = document.createElement("textarea");
+    ta.value = text; ta.style.cssText = "position:fixed;top:0;left:0;opacity:0;pointer-events:none";
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    try { document.execCommand("copy"); onSuccess(); } catch (e) {}
+    document.body.removeChild(ta);
+  }
+
+  elBtnCopy.addEventListener("click", function () {
+    var csv = buildCSV(state.columns, state.rows);
+    var ok  = function () {
+      elBtnCopy.textContent = "✓ Copied!"; elBtnCopy.classList.add("copied");
+      setTimeout(function () { elBtnCopy.textContent = "⎘ Copy All"; elBtnCopy.classList.remove("copied"); }, 2000);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(csv).then(ok).catch(function () { fallbackCopy(csv, ok); });
+    } else { fallbackCopy(csv, ok); }
+  });
+
+  elBtnExport.addEventListener("click", function () {
+    var csv = buildCSV(state.columns, state.rows);
+    var uri = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
+    var a   = document.createElement("a");
+    a.href  = uri; a.download = (state.fileName || "flattened").replace(/\.[^.]+$/, "") + "_flattened.csv";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  });
+
+  elBtnReset.addEventListener("click", function () {
+    state.rawData = null; state.rawType = ""; state.columns = []; state.rows = [];
+    state.filtered = []; state.fileName = ""; state.expandedCell = null;
+    elBtnCopy.textContent = "⎘ Copy All"; elBtnCopy.classList.remove("copied");
+    hideError(); showDrop();
+  });
+
+  elPgFirst.addEventListener("click", function () { state.page = 0; renderTable(); });
+  elPgPrev.addEventListener("click",  function () { state.page = Math.max(0, state.page - 1); renderTable(); });
+  elPgNext.addEventListener("click",  function () { var t = Math.ceil(state.filtered.length / PAGE_SIZE); state.page = Math.min(t - 1, state.page + 1); renderTable(); });
+  elPgLast.addEventListener("click",  function () { var t = Math.ceil(state.filtered.length / PAGE_SIZE); state.page = t - 1; renderTable(); });
+
+})();
+</script>
+</body>
+</html>

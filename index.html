@@ -1,4 +1,7 @@
 <!DOCTYPE html>
+/* version 3.0 with large file handiling, optimized for firefox..
+author: Gabri C
+supercazzola*/
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -71,6 +74,21 @@
   .toggle-label { font-size:11px; text-transform:uppercase; letter-spacing:0.1em; color:#64748b; }
   .toggle-wrap.on .toggle-label { color:#4af0b0; }
 
+  /* Progress */
+  #progress-bar {
+    display:none; align-items:center; gap:12px;
+    padding:10px 28px; background:#1a2535;
+    border-bottom:1px solid #252a35; flex-shrink:0;
+  }
+  #progress-track {
+    flex:1; height:6px; background:#0d0f14; border-radius:3px; overflow:hidden;
+  }
+  #progress-fill {
+    height:100%; width:0%; background:#4af0b0; border-radius:3px;
+    transition:width 0.3s ease;
+  }
+  #progress-text { font-size:12px; color:#4af0b0; white-space:nowrap; }
+
   /* Hint */
   #hint {
     display:flex; gap:12px; align-items:flex-start;
@@ -120,7 +138,7 @@
   #btn-reset:hover { color:#e2e8f0; border-color:#64748b; }
 
   /* Table */
-  #table-wrap { overflow-x:auto; overflow-y:auto; flex:1; min-height:0; display:none; max-height:calc(100vh - 260px); }
+  #table-wrap { overflow-x:auto; overflow-y:auto; flex:1; min-height:0; display:none; max-height:calc(100vh - 280px); }
   table { width:100%; border-collapse:collapse; font-size:12px; table-layout:auto; }
   thead th {
     background:#1a1f2e; color:#4af0b0; padding:10px 14px;
@@ -157,6 +175,13 @@
   .pg-btn:disabled { opacity:0.4; cursor:not-allowed; }
   .pg-btn:not(:disabled):hover { border-color:#4af0b0; color:#4af0b0; }
   #pg-info { font-size:12px; color:#64748b; padding:0 8px; }
+
+  /* Large file notice */
+  #large-file-notice {
+    display:none; padding:8px 28px; background:#1a2535;
+    border-bottom:1px solid #252a35; font-size:12px; color:#93c5fd;
+    flex-shrink:0;
+  }
 </style>
 </head>
 <body>
@@ -194,6 +219,15 @@
   </label>
 </div>
 
+<div id="progress-bar">
+  <div id="progress-text">Processing…</div>
+  <div id="progress-track"><div id="progress-fill"></div></div>
+</div>
+
+<div id="large-file-notice">
+  ⚡ <strong>Large file mode:</strong> File exceeds 50MB. Processing in streaming mode — only first 10,000 rows loaded for preview. Use Export to get the full file.
+</div>
+
 <div id="hint">
   <span id="hint-icon">💡</span>
   <span>
@@ -211,7 +245,7 @@
     <div id="drop-text">Drop your file here</div>
     <div id="drop-sub">
       Auto-detects <strong>JSON</strong> · <strong>JSONL</strong> · <strong>CSV</strong> · <strong>TSV</strong><br>
-      Expands embedded JSON blobs &amp; nested arrays automatically<br>
+      Supports files up to <strong>1GB+</strong> via streaming<br>
       <em style="color:#4af0b040">Defender · Sentinel · Purview audit exports supported</em>
     </div>
   </div>
@@ -246,6 +280,12 @@
 <script>
 (function () {
   "use strict";
+
+  // ── Constants ────────────────────────────────────────────────
+  var STREAMING_THRESHOLD = 50 * 1024 * 1024; // 50MB threshold
+  var PREVIEW_ROW_LIMIT = 10000;
+  var PAGE_SIZE = 50;
+  var EXPORT_BATCH_SIZE = 5000;
 
   /* ── Core: flatten ──────────────────────────────────────────── */
   function flatten(obj, parentKey, sep, maxDepth, depth) {
@@ -366,130 +406,341 @@
     return ",";
   }
 
-  function parseDelimited(text) {
-    var lines = text.split(/\r?\n/).filter(function (l) { return l.trim() !== ""; });
-    if (!lines.length) throw new Error("File is empty.");
-    var delim = detectDelimiter(lines[0]);
-    var first = parseLine(lines[0], delim);
-    var isData = /^[0-9a-f-]{36}$/i.test(first[0].trim());
-    var headers   = isData ? first.map(function (_, i) { return "col_" + i; }) : first.map(function (h) { return h.trim().replace(/^"|"$/g, ""); });
-    var dataLines = isData ? lines : lines.slice(1);
-    return {
-      delim: delim,
-      rows: dataLines.map(function (line) {
-        var vals = parseLine(line, delim);
-        var obj = {};
-        headers.forEach(function (h, i) { obj[h] = (vals[i] != null ? vals[i] : "").trim().replace(/^"|"$/g, ""); });
-        return obj;
-      })
-    };
-  }
-
   function stripBOM(text) {
     if (text.charCodeAt(0) === 0xFEFF) return text.substring(1);
     return text;
   }
 
-  function detectAndParse(text) {
-    text = stripBOM(text);
-    var t = text.trim();
-    if (t[0] === "{" || t[0] === "[") {
-      try { return { type: "json", data: JSON.parse(t) }; }
-      catch (e) { throw new Error("Looks like JSON but failed: " + e.message); }
-    }
-    var lines = t.split(/\r?\n/).filter(function (l) { return l.trim(); });
-    if (lines[0] && lines[0].trim()[0] === "{") {
-      try { return { type: "jsonl", data: lines.map(function (l) { return JSON.parse(l.trim()); }) }; }
-      catch (e) { /* fall through */ }
-    }
-    var pd = parseDelimited(t);
-    var label = pd.delim === "\t" ? "tsv" : pd.delim === ";" ? "ssv" : "csv";
-    return { type: label, data: pd.rows };
+  function csvRowToObject(line, headers, delim) {
+    var vals = parseLine(line, delim);
+    var obj = {};
+    headers.forEach(function (h, i) {
+      obj[h] = (vals[i] != null ? vals[i] : "").trim().replace(/^"|"$/g, "");
+    });
+    return obj;
   }
 
-  function toRows(data, sep, maxDepth, doExplode) {
-    sep      = sep || ".";
+  function toRow(obj, sep, maxDepth, doExplode) {
+    sep = sep || ".";
     maxDepth = (maxDepth === "" || maxDepth == null) ? null : parseInt(maxDepth, 10);
+
+    var expanded = deepParseObject(obj);
     var rawRows = [];
-    var arr = Array.isArray(data) ? data : [data];
-    var isSingle = !Array.isArray(data);
 
-    arr.forEach(function (item, idx) {
-      if (isSingle) { item = data; }
+    if (doExplode) {
+      var rowSets = [];
+      var simplePairs = {};
 
-      // Deep parse: recursively parse JSON strings in all values
-      var expanded = deepParseObject(item);
-
-      if (doExplode) {
-        // For explode mode, we need to handle each top-level key properly
-        // Some values may be objects/arrays that need exploding
-        var rowSets = [];
-        var simplePairs = {};
-
-        Object.keys(expanded).forEach(function (k) {
-          var v = expanded[k];
-          if (v !== null && typeof v === "object") {
-            var exploded = explodeRows(v, k, sep, maxDepth);
-            rowSets.push(exploded);
-          } else {
-            simplePairs[k] = v;
-          }
-        });
-
-        if (rowSets.length === 0) {
-          rawRows.push(simplePairs);
+      Object.keys(expanded).forEach(function (k) {
+        var v = expanded[k];
+        if (v !== null && typeof v === "object") {
+          var exploded = explodeRows(v, k, sep, maxDepth);
+          rowSets.push(exploded);
         } else {
-          // Cartesian product of all exploded sets
-          var result = [{}];
-          if (Object.keys(simplePairs).length > 0) {
-            result = [simplePairs];
-          }
-          rowSets.forEach(function (set) {
-            var next = [];
-            result.forEach(function (row) {
-              set.forEach(function (sub) {
-                next.push(Object.assign({}, row, sub));
-              });
-            });
-            result = next;
-          });
-          result.forEach(function (r) { rawRows.push(r); });
+          simplePairs[k] = v;
         }
+      });
+
+      if (rowSets.length === 0) {
+        rawRows.push(simplePairs);
       } else {
-        var flat = {};
-        Object.keys(expanded).forEach(function (k) {
-          var v = expanded[k];
-          if (v !== null && typeof v === "object") Object.assign(flat, flatten(v, k, sep, maxDepth));
-          else flat[k] = v;
+        var result = Object.keys(simplePairs).length > 0 ? [simplePairs] : [{}];
+        rowSets.forEach(function (set) {
+          var next = [];
+          result.forEach(function (row) {
+            set.forEach(function (sub) {
+              next.push(Object.assign({}, row, sub));
+            });
+          });
+          result = next;
         });
-        rawRows.push(flat);
+        result.forEach(function (r) { rawRows.push(r); });
       }
+    } else {
+      var flat = {};
+      Object.keys(expanded).forEach(function (k) {
+        var v = expanded[k];
+        if (v !== null && typeof v === "object") Object.assign(flat, flatten(v, k, sep, maxDepth));
+        else flat[k] = v;
+      });
+      rawRows.push(flat);
+    }
 
-      // Early exit if single item to avoid infinite loop
-      if (isSingle) return;
+    return rawRows;
+  }
+
+  function collectColumns(rows, existing) {
+    var seen = existing || {};
+    rows.forEach(function (row) {
+      Object.keys(row).forEach(function (k) { seen[k] = true; });
     });
+    return seen;
+  }
 
-    var seen = {};
-    rawRows.forEach(function (row) { Object.keys(row).forEach(function (k) { seen[k] = true; }); });
-    var columns = Object.keys(seen);
-    var rows = rawRows.map(function (row) {
+  function normalizeRows(rows, columns) {
+    return rows.map(function (row) {
       var out = {};
       columns.forEach(function (c) { out[c] = row[c] != null ? row[c] : ""; });
       return out;
     });
-    return { columns: columns, rows: rows };
   }
 
-  /* ── CSV ────────────────────────────────────────────────────── */
+  /* ── CSV helpers ────────────────────────────────────────────── */
+  function escCSV(v) {
+    var s = String(v != null ? v : "");
+    return (s.indexOf(",") >= 0 || s.indexOf('"') >= 0 || s.indexOf("\n") >= 0)
+      ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+
+  function buildCSVRow(columns, row) {
+    return columns.map(function (c) { return escCSV(row[c]); }).join(",");
+  }
+
   function buildCSV(columns, rows) {
-    function esc(v) {
-      var s = String(v != null ? v : "");
-      return (s.indexOf(",") >= 0 || s.indexOf('"') >= 0 || s.indexOf("\n") >= 0)
-        ? '"' + s.replace(/"/g, '""') + '"' : s;
-    }
-    var lines = [columns.map(esc).join(",")];
-    rows.forEach(function (row) { lines.push(columns.map(function (c) { return esc(row[c]); }).join(",")); });
+    var lines = [columns.map(escCSV).join(",")];
+    rows.forEach(function (row) { lines.push(buildCSVRow(columns, row)); });
     return lines.join("\r\n");
+  }
+
+  // Streaming line reader - properly handles chunk boundaries
+  async function* readLines(file) {
+    var stream = file.stream();
+    var reader = stream.getReader();
+    var decoder = new TextDecoder("utf-8");
+    var buf = "";
+    var first = true;
+
+    while (true) {
+      var { done, value } = await reader.read();
+      if (done) {
+        if (buf.length > 0) {
+          // Yield remaining buffer as final line(s)
+          var remaining = buf.split(/\r?\n/);
+          for (var i = 0; i < remaining.length; i++) {
+            if (remaining[i].length > 0) yield remaining[i];
+          }
+        }
+        reader.releaseLock();
+        return;
+      }
+
+      buf += decoder.decode(value, { stream: true });
+
+      if (first) {
+        buf = stripBOM(buf);
+        first = false;
+      }
+
+      var lines = buf.split(/\r?\n/);
+      // The last element might be incomplete - keep it in buffer
+      buf = lines.pop() || "";
+
+      for (var i = 0; i < lines.length; i++) {
+        yield lines[i];
+      }
+    }
+  }
+
+  // Single-pass streaming export that discovers columns AND writes rows
+  // Uses a two-pass approach but with the robust line reader
+  async function streamExportCSV(file, fileType, sep, maxDepth, doExplode, onProgress) {
+    var lineReader = readLines(file);
+    var firstLine = true;
+    var headers = null;
+    var delim = ",";
+    var isData = false;
+    var allColumns = {};
+    var lineNum = 0;
+    var fileTypeDetected = fileType;
+
+    // ── PASS 1: Detect format and collect all columns ──────────
+    for await (var line of lineReader) {
+      lineNum++;
+
+      if (firstLine) {
+        firstLine = false;
+        var trimmed = line.trim();
+
+        if (fileTypeDetected === "jsonl" || (trimmed[0] === "{")) {
+          fileTypeDetected = "jsonl";
+          try {
+            var obj = JSON.parse(trimmed);
+            var rows = toRow(obj, sep, maxDepth, doExplode);
+            rows.forEach(function (r) { collectColumns([r], allColumns); });
+          } catch (e) {}
+          continue;
+        }
+
+        // CSV/TSV
+        delim = detectDelimiter(line);
+        var first = parseLine(line, delim);
+        isData = /^[0-9a-f-]{36}$/i.test(first[0].trim());
+        headers = isData ? first.map(function (_, i) { return "col_" + i; }) : first.map(function (h) { return h.trim().replace(/^"|"$/g, ""); });
+        if (!isData) continue; // skip header row for column discovery too
+      }
+
+      if (fileTypeDetected === "jsonl") {
+        try {
+          var obj = JSON.parse(line.trim());
+          var rows = toRow(obj, sep, maxDepth, doExplode);
+          rows.forEach(function (r) { collectColumns([r], allColumns); });
+        } catch (e) {}
+      } else {
+        var obj = csvRowToObject(line, headers, delim);
+        var rows = toRow(obj, sep, maxDepth, doExplode);
+        rows.forEach(function (r) { collectColumns([r], allColumns); });
+      }
+
+      if (lineNum % 10000 === 0 && onProgress) {
+        onProgress("Discovering columns… " + lineNum + " lines read", 10);
+      }
+    }
+
+    var columns = Object.keys(allColumns);
+    if (columns.length === 0) {
+      throw new Error("No data columns found.");
+    }
+
+    // ── PASS 2: Write CSV in batches ─────────────────────────────
+    lineReader = readLines(file);
+    firstLine = true;
+    lineNum = 0;
+    var csvParts = [];
+    var batchRows = [];
+    var totalRows = 0;
+
+    // Write header
+    csvParts.push("\ufeff" + columns.map(escCSV).join(",") + "\r\n");
+
+    for await (var line of lineReader) {
+      lineNum++;
+
+      if (firstLine) {
+        firstLine = false;
+        if (fileTypeDetected !== "jsonl" && !isData) continue; // skip header
+        if (fileTypeDetected === "jsonl") {
+          try {
+            var obj = JSON.parse(line.trim());
+            var rows = toRow(obj, sep, maxDepth, doExplode);
+            rows.forEach(function (r) { batchRows.push(r); totalRows++; });
+          } catch (e) {}
+          continue;
+        }
+      }
+
+      if (fileTypeDetected === "jsonl") {
+        try {
+          var obj = JSON.parse(line.trim());
+          var rows = toRow(obj, sep, maxDepth, doExplode);
+          rows.forEach(function (r) { batchRows.push(r); totalRows++; });
+        } catch (e) {}
+      } else {
+        var obj = csvRowToObject(line, headers, delim);
+        var rows = toRow(obj, sep, maxDepth, doExplode);
+        rows.forEach(function (r) { batchRows.push(r); totalRows++; });
+      }
+
+      if (batchRows.length >= EXPORT_BATCH_SIZE) {
+        var chunk = batchRows.map(function (r) { return buildCSVRow(columns, r); }).join("\r\n") + "\r\n";
+        csvParts.push(chunk);
+        batchRows = [];
+      }
+
+      if (lineNum % 10000 === 0 && onProgress) {
+        onProgress("Exporting… " + totalRows + " rows written", 10 + Math.min(85, Math.round(lineNum / 200000 * 85)));
+      }
+    }
+
+    if (batchRows.length > 0) {
+      var chunk = batchRows.map(function (r) { return buildCSVRow(columns, r); }).join("\r\n") + "\r\n";
+      csvParts.push(chunk);
+    }
+
+    if (onProgress) onProgress("Finalizing…", 98);
+    var blob = new Blob(csvParts, { type: "text/csv;charset=utf-8;" });
+    if (onProgress) onProgress("Done! " + totalRows + " rows exported", 100);
+    return { blob: blob, columns: columns, rowCount: totalRows };
+  }
+
+  // Streaming preview for large files
+  async function streamPreview(file, fileType, sep, maxDepth, doExplode, onProgress) {
+    var lineReader = readLines(file);
+    var firstLine = true;
+    var headers = null;
+    var delim = ",";
+    var isData = false;
+    var allColumns = {};
+    var rawRows = [];
+    var lineNum = 0;
+    var processedRows = 0;
+    var fileTypeDetected = fileType;
+    var previewLimit = PREVIEW_ROW_LIMIT;
+
+    for await (var line of lineReader) {
+      lineNum++;
+
+      if (firstLine) {
+        firstLine = false;
+        var trimmed = line.trim();
+
+        if (fileTypeDetected === "jsonl" || (trimmed[0] === "{")) {
+          fileTypeDetected = "jsonl";
+          try {
+            var obj = JSON.parse(trimmed);
+            var rows = toRow(obj, sep, maxDepth, doExplode);
+            rows.forEach(function (r) {
+              collectColumns([r], allColumns);
+              rawRows.push(r);
+              processedRows++;
+            });
+          } catch (e) {}
+          continue;
+        }
+
+        delim = detectDelimiter(line);
+        var first = parseLine(line, delim);
+        isData = /^[0-9a-f-]{36}$/i.test(first[0].trim());
+        headers = isData ? first.map(function (_, i) { return "col_" + i; }) : first.map(function (h) { return h.trim().replace(/^"|"$/g, ""); });
+        if (!isData) continue;
+      }
+
+      if (fileTypeDetected === "jsonl") {
+        try {
+          var obj = JSON.parse(line.trim());
+          var rows = toRow(obj, sep, maxDepth, doExplode);
+          rows.forEach(function (r) {
+            collectColumns([r], allColumns);
+            rawRows.push(r);
+            processedRows++;
+          });
+        } catch (e) {}
+      } else {
+        var obj = csvRowToObject(line, headers, delim);
+        var rows = toRow(obj, sep, maxDepth, doExplode);
+        rows.forEach(function (r) {
+          collectColumns([r], allColumns);
+          rawRows.push(r);
+          processedRows++;
+        });
+      }
+
+      if (processedRows >= previewLimit) {
+        if (onProgress) onProgress("Preview limit reached", 100);
+        break;
+      }
+
+      if (lineNum % 5000 === 0 && onProgress) {
+        onProgress("Preview: " + processedRows + " rows…", Math.min(90, Math.round(processedRows / previewLimit * 90)));
+      }
+    }
+
+    var columns = Object.keys(allColumns);
+    return {
+      columns: columns,
+      rows: normalizeRows(rawRows, columns),
+      fileType: fileTypeDetected,
+      totalInputLines: lineNum
+    };
   }
 
   /* ── HTML escape ────────────────────────────────────────────── */
@@ -498,14 +749,18 @@
   }
 
   /* ── State ──────────────────────────────────────────────────── */
-  var state = { columns:[], rows:[], filtered:[], fileName:"", fileType:"", rawData:null, rawType:"", explode:true, page:0, expandedCell:null };
-  var PAGE_SIZE = 50;
+  var state = {
+    columns: [], rows: [], filtered: [], fileName: "", fileType: "",
+    rawData: null, rawType: "", explode: true, page: 0, expandedCell: null,
+    file: null, isLargeFile: false, totalInputLines: 0, totalOutputRows: 0
+  };
+
   var TYPE_BADGE = {
-    json:  { label:"JSON",             color:"#4af0b0" },
-    jsonl: { label:"JSON Lines",       color:"#60a5fa" },
-    csv:   { label:"CSV + JSON cells", color:"#f59e0b" },
-    tsv:   { label:"TSV + JSON cells", color:"#fb923c" },
-    ssv:   { label:"SSV + JSON cells", color:"#c084fc" }
+    json:  { label: "JSON",             color: "#4af0b0" },
+    jsonl: { label: "JSON Lines",       color: "#60a5fa" },
+    csv:   { label: "CSV + JSON cells", color: "#f59e0b" },
+    tsv:   { label: "TSV + JSON cells", color: "#fb923c" },
+    ssv:   { label: "SSV + JSON cells", color: "#c084fc" }
   };
 
   /* ── DOM ────────────────────────────────────────────────────── */
@@ -527,10 +782,23 @@
   var elPgFirst    = $("pg-first"),    elPgPrev     = $("pg-prev");
   var elPgNext     = $("pg-next"),     elPgLast     = $("pg-last");
   var elPgInfo     = $("pg-info");
+  var elProgress   = $("progress-bar"), elProgressFill = $("progress-fill");
+  var elProgressText = $("progress-text");
+  var elLargeNotice = $("large-file-notice");
 
   /* ── UI helpers ─────────────────────────────────────────────── */
   function showError(msg)  { elErrorMsg.textContent = msg; elError.style.display = "block"; }
   function hideError()     { elError.style.display = "none"; }
+
+  function showProgress(text, pct) {
+    elProgress.style.display = "flex";
+    elProgressText.textContent = text;
+    elProgressFill.style.width = pct + "%";
+  }
+  function hideProgress() {
+    elProgress.style.display = "none";
+    elProgressFill.style.width = "0%";
+  }
 
   function showResults() {
     elDropWrap.style.display   = "none";
@@ -548,7 +816,9 @@
     elPager.style.display      = "none";
     elHeaderBtns.style.display = "none";
     elSearchWrap.style.display = "none";
-    elInpSearch.value          = "";
+    elLargeNotice.style.display = "none";
+    hideProgress();
+    elInpSearch.value = "";
   }
 
   function applyFilter() {
@@ -562,13 +832,11 @@
   }
 
   function renderTable() {
-    // thead
     var th = '<tr><th class="th-idx">#</th>';
     state.columns.forEach(function (col) { th += '<th title="' + he(col) + '">' + he(col) + '</th>'; });
     th += "</tr>";
     elThead.innerHTML = th;
 
-    // tbody
     var total    = Math.ceil(state.filtered.length / PAGE_SIZE);
     var pageRows = state.filtered.slice(state.page * PAGE_SIZE, (state.page + 1) * PAGE_SIZE);
     var tb = "";
@@ -595,7 +863,6 @@
     });
     elTbody.innerHTML = tb;
 
-    // pager
     if (total > 1) {
       elPager.style.display  = "flex";
       elPgInfo.textContent   = "Page " + (state.page + 1) + " / " + total + " · " + state.filtered.length + " rows";
@@ -607,49 +874,154 @@
     }
   }
 
-  function processData(data, type) {
+  function updateStats() {
+    var badge = TYPE_BADGE[state.fileType] || { label: state.fileType, color: "#64748b" };
+    elChipType.textContent  = badge.label;
+    elChipType.style.borderColor = badge.color;
+    elChipType.style.color  = badge.color;
+    elChipType.style.display = "inline-block";
+    elChipExplod.style.display = state.explode ? "inline-block" : "none";
+    elChipRows.textContent  = state.rows.length;
+    elChipCols.textContent  = state.columns.length;
+    elChipFile.textContent  = state.fileName;
+  }
+
+  function processSmallFile(text, type) {
     var sep   = elInpSep.value || ".";
     var depth = elInpDepth.value.replace(/\D/g, "");
+
     try {
-      var result = toRows(data, sep, depth, state.explode);
-      state.columns      = result.columns;
-      state.rows         = result.rows;
-      state.fileType     = type;
+      text = stripBOM(text);
+      var t = text.trim();
+      var data, fileType;
+
+      if (type === "json" || t[0] === "{" || t[0] === "[") {
+        try {
+          data = JSON.parse(t);
+          fileType = Array.isArray(data) && data.length > 0 && typeof data[0] === "object" ? "jsonl" : "json";
+          if (!Array.isArray(data)) data = [data];
+        } catch (e) {
+          throw new Error("Looks like JSON but failed: " + e.message);
+        }
+      } else if (type === "jsonl") {
+        var lines = t.split(/\r?\n/).filter(function (l) { return l.trim(); });
+        try {
+          data = lines.map(function (l) { return JSON.parse(l.trim()); });
+          fileType = "jsonl";
+        } catch (e) {
+          throw new Error("Invalid JSONL: " + e.message);
+        }
+      } else {
+        var lines = text.split(/\r?\n/).filter(function (l) { return l.trim() !== ""; });
+        if (!lines.length) throw new Error("File is empty.");
+        var delim = detectDelimiter(lines[0]);
+        var first = parseLine(lines[0], delim);
+        var isData = /^[0-9a-f-]{36}$/i.test(first[0].trim());
+        var headers = isData ? first.map(function (_, i) { return "col_" + i; }) : first.map(function (h) { return h.trim().replace(/^"|"$/g, ""); });
+        var dataLines = isData ? lines : lines.slice(1);
+        data = dataLines.map(function (line) {
+          var vals = parseLine(line, delim);
+          var obj = {};
+          headers.forEach(function (h, i) { obj[h] = (vals[i] != null ? vals[i] : "").trim().replace(/^"|"$/g, ""); });
+          return obj;
+        });
+        fileType = delim === "\t" ? "tsv" : delim === ";" ? "ssv" : "csv";
+      }
+
+      var rawRows = [];
+      var allColumns = {};
+      var arr = Array.isArray(data) ? data : [data];
+
+      arr.forEach(function (item) {
+        var rows = toRow(item, sep, depth, state.explode);
+        rows.forEach(function (r) {
+          collectColumns([r], allColumns);
+          rawRows.push(r);
+        });
+      });
+
+      var columns = Object.keys(allColumns);
+      state.columns = columns;
+      state.rows = normalizeRows(rawRows, columns);
+      state.fileType = fileType;
       state.expandedCell = null;
       applyFilter();
-      // stats
-      var badge = TYPE_BADGE[type] || { label: type, color: "#64748b" };
-      elChipType.textContent  = badge.label;
-      elChipType.style.borderColor = badge.color;
-      elChipType.style.color  = badge.color;
-      elChipType.style.display = "inline-block";
-      elChipExplod.style.display = state.explode ? "inline-block" : "none";
-      elChipRows.textContent  = state.rows.length;
-      elChipCols.textContent  = state.columns.length;
-      elChipFile.textContent  = state.fileName;
+      updateStats();
       renderTable();
       showResults();
       hideError();
-    } catch (e) { showError(e.message); }
+    } catch (e) {
+      showError(e.message);
+      hideProgress();
+    }
+  }
+
+  async function processLargeFile(file, type) {
+    var sep   = elInpSep.value || ".";
+    var depth = elInpDepth.value.replace(/\D/g, "");
+
+    showProgress("Reading file…", 0);
+    state.isLargeFile = true;
+    elLargeNotice.style.display = "block";
+
+    try {
+      var result = await streamPreview(file, type, sep, depth, state.explode, function (text, pct) {
+        showProgress(text, pct);
+      });
+
+      state.columns = result.columns;
+      state.rows = result.rows;
+      state.fileType = result.fileType;
+      state.totalInputLines = result.totalInputLines;
+      state.expandedCell = null;
+      applyFilter();
+      updateStats();
+      renderTable();
+      showResults();
+      hideError();
+      hideProgress();
+    } catch (e) {
+      showError(e.message);
+      hideProgress();
+    }
   }
 
   function loadFile(file) {
     state.fileName = file.name;
-    state.rawData  = null;
+    state.file = file;
+    state.rawData = null;
+    state.isLargeFile = file.size > STREAMING_THRESHOLD;
     hideError();
-    var reader = new FileReader();
-    reader.onload = function (e) {
-      try {
-        var parsed = detectAndParse(e.target.result);
-        state.rawData = parsed.data;
-        state.rawType = parsed.type;
-        processData(parsed.data, parsed.type);
-      } catch (err) { showError(err.message); }
-    };
-    reader.readAsText(file);
+
+    var ext = (file.name.match(/\.[^.]+$/) || [""])[0].toLowerCase();
+    var type = ext === ".json" ? "json" : ext === ".jsonl" ? "jsonl" : ext === ".tsv" ? "tsv" : ext === ".csv" ? "csv" : "";
+
+    if (file.size > STREAMING_THRESHOLD) {
+      processLargeFile(file, type);
+    } else {
+      var reader = new FileReader();
+      reader.onload = function (e) {
+        processSmallFile(e.target.result, type);
+      };
+      reader.onerror = function () {
+        showError("Failed to read file.");
+      };
+      reader.readAsText(file);
+    }
   }
 
-  function reprocess() { if (state.rawData) processData(state.rawData, state.rawType); }
+  function reprocess() {
+    if (!state.file) return;
+    if (state.isLargeFile) {
+      processLargeFile(state.file, state.fileType);
+    } else if (state.file) {
+      var reader = new FileReader();
+      reader.onload = function (e) {
+        processSmallFile(e.target.result, state.fileType);
+      };
+      reader.readAsText(state.file);
+    }
+  }
 
   /* ── Events ─────────────────────────────────────────────────── */
   elDropZone.addEventListener("dragover",  function (e) { e.preventDefault(); elDropZone.classList.add("drag-over"); elDropIcon.textContent = "⬇"; elDropText.textContent = "Release to load"; });
@@ -698,20 +1070,42 @@
     } else { fallbackCopy(csv, ok); }
   });
 
-  elBtnExport.addEventListener("click", function () {
-    var csv = buildCSV(state.columns, state.rows);
-    var blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8;" });
-    var url = URL.createObjectURL(blob);
-    var a   = document.createElement("a");
-    a.href  = url; 
-    a.download = (state.fileName || "flattened").replace(/\.[^.]+$/, "") + "_flattened.csv";
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  elBtnExport.addEventListener("click", async function () {
+    if (state.isLargeFile && state.file) {
+      showProgress("Starting export…", 0);
+      try {
+        var sep = elInpSep.value || ".";
+        var depth = elInpDepth.value.replace(/\D/g, "");
+        var result = await streamExportCSV(state.file, state.fileType, sep, depth, state.explode, function (text, pct) {
+          showProgress(text, pct);
+        });
+        var url = URL.createObjectURL(result.blob);
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = (state.fileName || "flattened").replace(/\.[^.]+$/, "") + "_flattened.csv";
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+        hideProgress();
+      } catch (e) {
+        showError("Export failed: " + e.message);
+        hideProgress();
+      }
+    } else {
+      var csv = buildCSV(state.columns, state.rows);
+      var blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8;" });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = (state.fileName || "flattened").replace(/\.[^.]+$/, "") + "_flattened.csv";
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    }
   });
 
   elBtnReset.addEventListener("click", function () {
     state.rawData = null; state.rawType = ""; state.columns = []; state.rows = [];
     state.filtered = []; state.fileName = ""; state.expandedCell = null;
+    state.file = null; state.isLargeFile = false;
     elBtnCopy.textContent = "⎘ Copy All"; elBtnCopy.classList.remove("copied");
     hideError(); showDrop();
   });
